@@ -1,0 +1,297 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Goldfish Smart Feeder</title>
+  <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+  <style>
+    :root {
+      --primary: #007bff; --success: #28a745; --danger: #dc3545;
+      --warning: #ffc107; --background: #f0f4f8; --card-bg: #ffffff;
+    }
+    body {
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      background-color: var(--background); display: flex;
+      justify-content: center; align-items: center; min-height: 100vh;
+      margin: 0; color: #333; padding: 20px 0; 
+    }
+    .card {
+      background: var(--card-bg); width: 100%; max-width: 450px;
+      padding: 30px; border-radius: 16px; box-shadow: 0 10px 25px rgba(0,0,0,0.05);
+    }
+    .header { text-align: center; margin-bottom: 15px; }
+    .header h2 { margin: 0 0 5px 0; color: #2c3e50; }
+    .clock-display { font-size: 18px; font-weight: bold; color: var(--primary); margin-bottom: 10px; }
+    .status-badge {
+      display: inline-block; padding: 5px 12px; border-radius: 20px;
+      font-size: 14px; background-color: #e9ecef; color: #6c757d;
+    }
+    .status-badge.online { background-color: #d4edda; color: var(--success); }
+    .status-badge.offline { background-color: #f8d7da; color: var(--danger); }
+
+    /* ระบบ Logs 2 คอลัมน์ */
+    .logs-container { display: flex; gap: 10px; margin-bottom: 20px; }
+    .log-box {
+      flex: 1; background-color: #f8f9fa; border: 1px solid #e9ecef;
+      border-radius: 8px; padding: 10px; font-size: 12px;
+      height: 110px; overflow-y: auto; color: #495057;
+    }
+    .log-box h4 { margin: 0 0 8px 0; font-size: 13px; color: #343a40; border-bottom: 1px solid #dee2e6; padding-bottom: 5px; }
+    .log-content { white-space: pre-wrap; line-height: 1.5; }
+
+    /* Controls & Gauges */
+    .gauge-container { margin: 15px 0 25px 0; text-align: center; }
+    .gauge-label { font-weight: 600; margin-bottom: 8px; display: flex; justify-content: space-between; }
+    .progress-bar { height: 20px; background-color: #e9ecef; border-radius: 10px; overflow: hidden; }
+    .progress-fill { height: 100%; background-color: var(--success); width: 0%; transition: width 0.5s ease-in-out; }
+    
+    .control-group { background: #f8f9fa; padding: 15px; border-radius: 12px; margin-bottom: 15px; }
+    .control-group h3 { margin: 0 0 15px 0; font-size: 16px; display: flex; justify-content: space-between; align-items: center;}
+    
+    button {
+      width: 100%; padding: 12px; border: none; border-radius: 8px;
+      font-size: 16px; font-weight: 600; cursor: pointer; transition: 0.2s;
+    }
+    .btn-feed { background-color: var(--primary); color: white; }
+    .btn-sync { background-color: #17a2b8; color: white; font-size: 13px; padding: 6px 10px; width: auto; }
+    .btn-save { background-color: #6c757d; color: white; margin-top: 15px; }
+    .btn-add { background-color: #28a745; color: white; padding: 10px; font-size: 14px; margin-top: 10px;}
+    
+    /* Schedule List */
+    .schedule-list { display: flex; flex-direction: column; gap: 8px; }
+    .schedule-item {
+      display: flex; align-items: center; gap: 8px; background: #fff;
+      padding: 8px 12px; border-radius: 8px; border: 1px solid #ced4da;
+    }
+    .schedule-item input[type="checkbox"] { width: 18px; height: 18px; accent-color: var(--primary); cursor: pointer; }
+    .schedule-item label { flex: 1; font-weight: 500; font-size: 14px; cursor: pointer; }
+    .schedule-item input[type="time"] { width: 110px; padding: 6px; border: 1px solid #ced4da; border-radius: 6px; }
+    .schedule-item input[type="time"]:disabled { background-color: #e9ecef; opacity: 0.5; }
+    .btn-remove { width: auto; padding: 6px 8px; background: transparent; color: var(--danger); font-size: 14px; }
+    .btn-remove:hover { background: #ffeeba; }
+  </style>
+</head>
+<body>
+
+  <div class="card">
+    <div class="header">
+      <h2>🐠 ระบบให้อาหารปลาอัจฉริยะ</h2>
+      <div id="realtime-clock" class="clock-display">--:--:--</div>
+      <div id="connection-status" class="status-badge">กำลังเชื่อมต่อ Broker...</div>
+    </div>
+
+    <!-- ส่วนแสดงประวัติ (Logs) -->
+    <div class="logs-container">
+      <div class="log-box">
+        <h4>🐟 ประวัติให้อาหาร</h4>
+        <div id="feed-log" class="log-content">-- ไม่มีข้อมูล --</div>
+      </div>
+      <div class="log-box">
+        <h4>⚙️ ประวัติระบบ</h4>
+        <div id="sys-log" class="log-content">-- ไม่มีข้อมูล --</div>
+      </div>
+    </div>
+
+    <!-- เกจวัดระดับอาหาร -->
+    <div class="gauge-container">
+      <div class="gauge-label">
+        <span>ปริมาณอาหารคงเหลือ</span>
+        <span id="food-text">--%</span>
+      </div>
+      <div class="progress-bar">
+        <div id="food-fill" class="progress-fill"></div>
+      </div>
+    </div>
+
+    <div class="control-group">
+      <h3>
+        ให้อาหารแบบ Manual
+        <button class="btn-sync" onclick="syncTimeToDevice()">⏱ ซิงค์เวลา</button>
+      </h3>
+      <button class="btn-feed" onclick="sendFeedCommand()">🐟 ให้อาหารทันที</button>
+    </div>
+
+    <!-- ตั้งเวลาให้อาหาร -->
+    <div class="control-group">
+      <h3>ตั้งเวลาอัตโนมัติ (สูงสุด 5 มื้อ)</h3>
+      <div id="schedule-container" class="schedule-list"></div>
+      <button id="btn-add-schedule" class="btn-add" onclick="addScheduleSlot()">➕ เพิ่มช่วงเวลา</button>
+      <button class="btn-save" onclick="sendScheduleCommand()">💾 บันทึกเวลาทั้งหมด</button>
+    </div>
+  </div>
+
+  <script>
+    const brokerUrl = 'wss://42556a1a83004b9f8407776620ae63e7.s1.eu.hivemq.cloud:8884/mqtt';
+    const client = mqtt.connect(brokerUrl, { username: 'admin', password: '12345678', clean: true });
+
+    const topicCmd = 'feeder/nitipat/cmd';
+    const topicFoodLevel = 'feeder/nitipat/food_level';
+    const topicLogFeed = 'feeder/nitipat/ui_log_feed';
+    const topicLogSys = 'feeder/nitipat/ui_log_sys';
+    const topicScheduleUI = 'feeder/nitipat/ui_schedule';
+
+    const MAX_SLOTS = 5;
+    let slotIdCounter = 0; // รัน ID ไปเรื่อยๆ ป้องกัน ID ซ้ำตอนลบ
+
+    // นาฬิกา
+    setInterval(() => {
+      document.getElementById('realtime-clock').innerText = new Date().toLocaleTimeString('th-TH', { hour12: false });
+    }, 1000);
+
+    function getTimeStamp() {
+      const d = new Date();
+      return `${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}:${String(d.getSeconds()).padStart(2,'0')}`;
+    }
+
+    client.on('connect', () => {
+      const badge = document.getElementById('connection-status');
+      badge.innerText = 'เชื่อมต่อออนไลน์ ✅'; badge.className = 'status-badge online';
+      
+      client.subscribe(topicFoodLevel);
+      client.subscribe(topicLogFeed);
+      client.subscribe(topicLogSys);
+      client.subscribe(topicScheduleUI);
+    });
+
+    client.on('message', (topic, message) => {
+      const msgStr = message.toString();
+      if (topic === topicFoodLevel) {
+        updateFoodGauge(parseInt(msgStr));
+      } else if (topic === topicLogFeed) {
+        document.getElementById('feed-log').innerText = msgStr;
+      } else if (topic === topicLogSys) {
+        document.getElementById('sys-log').innerText = msgStr;
+      } else if (topic === topicScheduleUI) {
+        restoreScheduleUI(msgStr);
+      }
+    });
+
+    function updateFoodGauge(level) {
+      const fill = document.getElementById('food-fill');
+      const text = document.getElementById('food-text');
+      let safeLevel = Math.max(0, Math.min(100, level));
+      fill.style.width = safeLevel + '%'; text.innerText = safeLevel + '%';
+      fill.style.backgroundColor = safeLevel > 50 ? 'var(--success)' : safeLevel > 20 ? 'var(--warning)' : 'var(--danger)';
+    }
+
+    // ------------------------------------------------
+    // จัดการ Log 5 บรรทัด
+    // ------------------------------------------------
+    function pushLog(type, text) {
+      const isFeed = type === 'feed';
+      const topic = isFeed ? topicLogFeed : topicLogSys;
+      const elId = isFeed ? 'feed-log' : 'sys-log';
+      
+      // ดึงประวัติเดิมมาตัดบรรทัด
+      let currentLogs = document.getElementById(elId).innerText.split('\n');
+      currentLogs = currentLogs.filter(l => l.trim() !== '' && l !== '-- ไม่มีข้อมูล --');
+      
+      // แทรกข้อมูลใหม่ไว้บนสุด และเก็บแค่ 5 บรรทัด
+      currentLogs.unshift(`[${getTimeStamp()}] ${text}`);
+      currentLogs = currentLogs.slice(0, 5);
+      
+      // ส่งไป Retain ที่ MQTT
+      client.publish(topic, currentLogs.join('\n'), { retain: true });
+    }
+
+    // ------------------------------------------------
+    // คำสั่งสั่งงาน
+    // ------------------------------------------------
+    function sendFeedCommand() {
+      client.publish(topicCmd, 'FEED_NOW');
+      pushLog('feed', 'สั่งให้อาหาร Manual');
+    }
+
+    function syncTimeToDevice() {
+      client.publish(topicCmd, 'SYNC_TIME:' + getTimeStamp());
+      pushLog('sys', 'ซิงค์เวลาล่าสุด');
+    }
+
+    // ------------------------------------------------
+    // ระบบตั้งเวลา (เพิ่ม/ลบ)
+    // ------------------------------------------------
+    function addScheduleSlot(defaultTime = '', isChecked = true) {
+      const currentCount = document.querySelectorAll('.schedule-item').length;
+      if (currentCount >= MAX_SLOTS) return;
+
+      slotIdCounter++;
+      const id = slotIdCounter;
+      
+      const item = document.createElement('div');
+      item.className = 'schedule-item';
+      item.id = `slot-${id}`;
+      item.innerHTML = `
+        <input type="checkbox" id="chk-${id}" ${isChecked ? 'checked' : ''} onchange="toggleTime(${id})">
+        <label for="chk-${id}">มื้อเวลา</label>
+        <input type="time" id="sch-${id}" value="${defaultTime}" ${!isChecked ? 'disabled' : ''}>
+        <button class="btn-remove" onclick="removeSlot(${id})">❌</button>
+      `;
+      document.getElementById('schedule-container').appendChild(item);
+      checkMaxSlots();
+    }
+
+    function removeSlot(id) {
+      const el = document.getElementById(`slot-${id}`);
+      if (el) el.remove();
+      checkMaxSlots();
+    }
+
+    function toggleTime(id) {
+       const chk = document.getElementById(`chk-${id}`);
+       const sch = document.getElementById(`sch-${id}`);
+       sch.disabled = !chk.checked;
+    }
+
+    function checkMaxSlots() {
+      const count = document.querySelectorAll('.schedule-item').length;
+      document.getElementById('btn-add-schedule').style.display = (count >= MAX_SLOTS) ? 'none' : 'block';
+    }
+
+    function sendScheduleCommand() {
+      let schedules = [];
+      
+      // กวาดข้อมูลจากทุกช่องที่เหลืออยู่บนจอ
+      const items = document.querySelectorAll('.schedule-item');
+      items.forEach(item => {
+        const chk = item.querySelector('input[type="checkbox"]');
+        const sch = item.querySelector('input[type="time"]');
+        if (chk && sch && chk.checked && sch.value) {
+          schedules.push(sch.value);
+        }
+      });
+
+      // เติม --:-- ให้ครบ 5 Slot ก่อนส่งให้บอร์ด
+      while(schedules.length < MAX_SLOTS) {
+        schedules.push('--:--');
+      }
+
+      const payload = 'SET_SCHEDULE:' + schedules.join(',');
+      client.publish(topicCmd, payload);
+      client.publish(topicScheduleUI, payload, { retain: true });
+      pushLog('sys', `อัปเดตเวลา ${schedules.filter(t => t!=='--:--').length} มื้อ`);
+    }
+
+    function restoreScheduleUI(payload) {
+      const times = payload.replace('SET_SCHEDULE:', '').split(',');
+      document.getElementById('schedule-container').innerHTML = '';
+      
+      times.forEach(t => {
+        if (t !== '--:--' && t !== '') {
+          addScheduleSlot(t, true);
+        }
+      });
+      checkMaxSlots();
+    }
+
+    // กรณีเปิดเว็บใหม่สุดๆ แล้วไม่มีข้อมูล Retain ให้ขึ้นต้นไว้ 1 ช่อง
+    window.onload = () => {
+      setTimeout(() => {
+        if (document.querySelectorAll('.schedule-item').length === 0) {
+          addScheduleSlot('08:00', true);
+        }
+      }, 1500);
+    };
+  </script>
+</body>
+</html>
